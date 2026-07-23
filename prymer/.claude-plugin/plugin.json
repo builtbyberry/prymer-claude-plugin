@@ -1,0 +1,20 @@
+{
+    "name": "prymer",
+    "description": "Prymer shared context bus \u2014 connects the hosted Prymer MCP server, teaches the load-at-start / checkpoint-at-end ritual, and adds skills for loading, checkpointing, onboarding, curation, handoffs, and the Projects produce-loop, plus prymer-dispatch and prymer-project worker subagents.",
+    "version": "0.10.0",
+    "author": {
+        "name": "Prymer",
+        "url": "https://swarmplatform.cloud"
+    },
+    "homepage": "https://swarmplatform.cloud",
+    "license": "Apache-2.0",
+    "keywords": [
+        "prymer",
+        "context",
+        "memory",
+        "mcp",
+        "collaboration",
+        "handoff",
+        "dispatch"
+    ]
+}

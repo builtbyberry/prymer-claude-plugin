@@ -1,0 +1,34 @@
+{
+    "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "printf '%s' 'Prymer is connected. Before starting work, call the get_context_for_injection MCP tool for the active Prymer channel (confirm it with the user; do not pick one from list_channels yourself) to load what other sessions already know.'"
+                    }
+                ]
+            }
+        ],
+        "PreCompact": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "printf '%s' 'Context is about to be compacted. If you have unsaved working context for this task, call the capture_context MCP tool now to preserve it as a private Prymer note before the window is trimmed \u2014 it stays private until you share or promote it.'"
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "printf '%s' 'If you finished a meaningful chunk of work, checkpoint it to the Prymer channel per its capture mode. Follow the guidance field returned by get_context_for_injection: Auto means call share_session with trigger=agent_auto; Propose means ask the user first; Off means keep it private.'"
+                    }
+                ]
+            }
+        ]
+    }
+}

@@ -4,7 +4,7 @@ Connects this project to Prymer, the shared context bus, and teaches the ritual:
 
 ## What is inside
 
-- `.mcp.json` — connects the hosted Prymer MCP server at `https://swarmplatform.cloud/mcp/prymer` (browser OAuth on first use; no token to copy).
+- `.mcp.json` — connects the hosted Prymer MCP server at `https://prymer.app/mcp/prymer` (browser OAuth on first use; no token to copy).
 - `skills/prymer/` — the Prymer skill: how to use the tools well.
 - `skills/` — the `/prymer:load`, `/prymer:checkpoint`, `/prymer:onboard`, `/prymer:curate`, `/prymer:handoff`, and `/prymer:project` skills.
 - `agents/prymer-dispatch` — a subagent that runs a Prymer dispatch end to end and returns a proposal for you to confirm.

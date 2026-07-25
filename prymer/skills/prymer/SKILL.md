@@ -38,6 +38,6 @@ On a Project, Prymer reviews and the agent edits: a human's channel into the wor
 
 The full tool catalog is in `reference/tools.md`. Capture-mode behavior is in `reference/capture-modes.md`. Curation, handoffs, and running a dispatch as a worker are in `reference/curation.md`, `reference/handoff.md`, and `reference/dispatch.md`.
 
-Connect a tool to Prymer at `https://swarmplatform.cloud/mcp/prymer` (browser OAuth on first use; no token to copy).
+Connect a tool to Prymer at `https://prymer.app/mcp/prymer` (browser OAuth on first use; no token to copy).
 
 Licensed under Apache-2.0. The hosted Prymer service has its own terms; "Prymer" is a trademark.

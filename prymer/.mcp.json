@@ -2,7 +2,7 @@
     "mcpServers": {
         "prymer": {
             "type": "http",
-            "url": "https://swarmplatform.cloud/mcp/prymer"
+            "url": "https://prymer.app/mcp/prymer"
         }
     }
 }

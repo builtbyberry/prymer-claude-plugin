@@ -1,6 +1,6 @@
 # Prymer — Claude Code plugin marketplace
 
-The Claude Code plugin marketplace for [Prymer](https://swarmplatform.cloud), the shared context bus. Installing the `prymer` plugin connects the hosted Prymer MCP server, teaches the load-at-start / checkpoint-at-end ritual, and adds the `/prymer:*` skills plus the `prymer-dispatch` and `prymer-project` worker subagents.
+The Claude Code plugin marketplace for [Prymer](https://prymer.app), the shared context bus. Installing the `prymer` plugin connects the hosted Prymer MCP server, teaches the load-at-start / checkpoint-at-end ritual, and adds the `/prymer:*` skills plus the `prymer-dispatch` and `prymer-project` worker subagents.
 
 ## Install
 

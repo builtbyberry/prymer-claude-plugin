@@ -40,4 +40,6 @@ The full tool catalog is in `reference/tools.md`. Capture-mode behavior is in `r
 
 Connect a tool to Prymer at `https://prymer.app/mcp/prymer` (browser OAuth on first use; no token to copy).
 
+**If the Prymer tools are not available in this session**, the connection failed — it does not mean the feature is missing or that the user opted out. Say so plainly rather than working around it silently. Check that `https://prymer.app/mcp/prymer` opens in a browser on this machine, and confirm from a different network before concluding Prymer is down: corporate firewalls and DNS filters routinely block newly registered domains, and a filtered connection is indistinguishable from an outage when seen only from inside the blocked network. See https://prymer.app/docs/troubleshooting.
+
 Licensed under Apache-2.0. The hosted Prymer service has its own terms; "Prymer" is a trademark.

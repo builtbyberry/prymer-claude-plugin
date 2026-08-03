@@ -4,12 +4,14 @@ The Claude Code plugin marketplace for [Prymer](https://prymer.app), the shared 
 
 ## Install
 
-This tree is a self-contained marketplace. In Claude Code, from this directory:
+In Claude Code:
 
 ```
-/plugin marketplace add ./
+/plugin marketplace add builtbyberry/prymer-claude-plugin
 /plugin install prymer@prymer
 ```
+
+Downloaded this as a zip instead? It is a self-contained marketplace — run `/plugin marketplace add ./` from the directory you unzipped it into, then install as above.
 
 Then restart Claude Code (or run `/reload-plugins`). On first use, Claude opens Prymer in your browser to authorize — no token to copy. Then run `/prymer:onboard` to bind this project to a channel — the marketplace install has no channel baked in, so onboarding (or hand-adding a `<!-- prymer-channel: <workspace-slug>/<channel-key> -->` line to `CLAUDE.md`) is what tells future sessions which one to use.
 

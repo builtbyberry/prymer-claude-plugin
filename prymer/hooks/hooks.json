@@ -20,6 +20,17 @@
                 ]
             }
         ],
+        "PreToolUse": [
+            {
+                "matcher": "mcp__prymer__get_context_for_injection",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/set-host-session.mjs\""
+                    }
+                ]
+            }
+        ],
         "Stop": [
             {
                 "hooks": [

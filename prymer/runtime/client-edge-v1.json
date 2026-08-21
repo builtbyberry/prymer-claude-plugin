@@ -1,0 +1,49 @@
+{
+    "contract": "app.prymer.edge.connection",
+    "version": 2,
+    "platform": "darwin",
+    "loopback_host": "127.0.0.1",
+    "signing_team_id": "3A5B83E5D4",
+    "client_session_header": "X-Prymer-Client-Session",
+    "mcp_path": "/mcp",
+    "lifecycle": {
+        "path": "/lifecycle",
+        "events": ["session-start", "stop", "pre-tool-use"],
+        "max_body_bytes": 8192,
+        "max_session_id_length": 512,
+        "max_cwd_length": 4096,
+        "max_tool_length": 512
+    },
+    "discovery": {
+        "schema": "app.prymer.edge.discovery",
+        "ttl_seconds": 90,
+        "keys": [
+            "credential_path",
+            "endpoint",
+            "expires_at",
+            "generation",
+            "health_path",
+            "helper_version",
+            "instance_id",
+            "lifecycle_path",
+            "mcp_path",
+            "pid",
+            "published_at",
+            "ready",
+            "schema",
+            "version"
+        ]
+    },
+    "health": {
+        "schema": "app.prymer.edge.health",
+        "path": "/health",
+        "keys": [
+            "generation",
+            "helper_version",
+            "instance_id",
+            "ready",
+            "schema",
+            "version"
+        ]
+    }
+}

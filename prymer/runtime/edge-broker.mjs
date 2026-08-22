@@ -9,6 +9,7 @@ import process from 'node:process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import {
+    compareHelperVersions,
     connectionContract,
     fetchWithDeadline,
     healthyDiscovery,
@@ -35,6 +36,7 @@ let directHelperProcess = null;
 let directHelperStart = null;
 let directHelperPending = [];
 let directHelperStderr = '';
+let helperPreparation = null;
 
 const cloudEndpoint = argument('--cloud-endpoint');
 const allowAdhocHelper = process.argv.includes('--allow-adhoc-helper');
@@ -86,7 +88,13 @@ async function handleLine(line) {
 }
 
 async function route(request) {
-    const local = await healthyDiscovery({ unhealthyGenerations });
+    const prepared = await prepareHelperOnce();
+    const local = prepared.allowLocalDiscovery
+        ? await healthyDiscovery({
+              minimumHelperVersion: prepared.helperVersion,
+              unhealthyGenerations,
+          })
+        : null;
 
     if (local === null) {
         return callHelperDirect(request);
@@ -162,7 +170,7 @@ async function directHelper() {
     }
 
     directHelperStart = (async () => {
-        const helper = await locateHelper();
+        const { helper } = await prepareHelperOnce();
         const child = spawn(
             helper,
             ['call', '--cloud-endpoint', cloudEndpoint],
@@ -225,11 +233,15 @@ function rejectDirectHelper(error) {
     }
 }
 
-async function locateHelper() {
-    if (await signedExecutable(stableHelper)) {
-        return stableHelper;
+function prepareHelperOnce() {
+    if (helperPreparation === null) {
+        helperPreparation = prepareHelper();
     }
 
+    return helperPreparation;
+}
+
+async function prepareHelper() {
     if (
         !(await signedExecutable(bundledHelper)) ||
         !(await checksumMatches(bundledHelper))
@@ -245,18 +257,102 @@ async function locateHelper() {
         {
             encoding: 'utf8',
             env: minimalEnvironment(),
+            maxBuffer: 16_384,
             timeout: 15_000,
         },
     );
 
-    if (install.status === 0 && (await executable(stableHelper))) {
-        return stableHelper;
+    if (install.status === 0) {
+        const installed = await verifiedInstalledHelper();
+
+        return {
+            ...installed,
+            allowLocalDiscovery: true,
+        };
     }
 
     // The bundled helper is itself signed and owns the same Keychain identity.
     // If stable installation is temporarily unavailable, direct mode remains
-    // usable without exposing credentials to the broker.
-    return bundledHelper;
+    // usable without exposing credentials to the broker. Local discovery is
+    // disabled for this broker process so a stale helper can never receive MCP
+    // bytes after its replacement failed.
+    const selected = await helperForOperationalInstallFailure();
+
+    return { ...selected, allowLocalDiscovery: false };
+}
+
+async function verifiedInstalledHelper() {
+    if (!(await signedExecutable(stableHelper))) {
+        throw new Error(
+            'The installed Prymer helper failed signature verification after installation.',
+        );
+    }
+
+    const installedVersion = await helperVersion(stableHelper);
+    const bundledVersion = await helperVersion(bundledHelper);
+    const comparison = compareHelperVersions(installedVersion, bundledVersion);
+
+    if (comparison < 0) {
+        throw new Error(
+            `The installed Prymer helper ${installedVersion} is older than bundled helper ${bundledVersion} after installation.`,
+        );
+    }
+
+    if (comparison === 0 && !(await filesMatch(stableHelper, bundledHelper))) {
+        throw new Error(
+            `The installed Prymer helper ${installedVersion} differs from this release; refusing a same-version replacement.`,
+        );
+    }
+
+    return { helper: stableHelper, helperVersion: installedVersion };
+}
+
+async function helperForOperationalInstallFailure() {
+    if (!(await signedExecutable(stableHelper))) {
+        return {
+            helper: bundledHelper,
+            helperVersion: await helperVersion(bundledHelper),
+        };
+    }
+
+    const installedVersion = await helperVersion(stableHelper);
+    const bundledVersion = await helperVersion(bundledHelper);
+    const comparison = compareHelperVersions(installedVersion, bundledVersion);
+
+    if (comparison === 0 && !(await filesMatch(stableHelper, bundledHelper))) {
+        throw new Error(
+            `The installed Prymer helper ${installedVersion} differs from this release; refusing a same-version replacement.`,
+        );
+    }
+
+    return comparison >= 0
+        ? { helper: stableHelper, helperVersion: installedVersion }
+        : { helper: bundledHelper, helperVersion: bundledVersion };
+}
+
+async function helperVersion(path) {
+    const result = spawnSync(path, ['version'], {
+        encoding: 'utf8',
+        env: minimalEnvironment(),
+        maxBuffer: 16_384,
+        timeout: 5_000,
+    });
+    const version = result.stdout?.trim() ?? '';
+
+    if (result.status !== 0 || !/^\d+\.\d+\.\d+$/.test(version)) {
+        throw new Error('A signed Prymer helper reported an invalid version.');
+    }
+
+    return version;
+}
+
+async function filesMatch(first, second) {
+    const [firstBytes, secondBytes] = await Promise.all([
+        readFile(first),
+        readFile(second),
+    ]);
+
+    return firstBytes.equals(secondBytes);
 }
 
 async function executable(path) {

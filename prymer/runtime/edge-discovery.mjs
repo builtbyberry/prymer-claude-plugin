@@ -22,6 +22,7 @@ const discoveryPath = join(
 
 export async function healthyDiscovery({
     deadlineAt = Date.now() + 250,
+    minimumHelperVersion = null,
     unhealthyGenerations = new Set(),
 } = {}) {
     try {
@@ -31,6 +32,16 @@ export async function healthyDiscovery({
         requirePrivateFile(discoveryStat, 'discovery');
         const discovery = JSON.parse(await readFile(discoveryPath, 'utf8'));
         validateDiscovery(discovery);
+
+        if (
+            minimumHelperVersion !== null &&
+            compareHelperVersions(
+                discovery.helper_version,
+                minimumHelperVersion,
+            ) < 0
+        ) {
+            return null;
+        }
 
         if (unhealthyGenerations.has(discovery.generation)) {
             return null;
@@ -64,7 +75,8 @@ export async function healthyDiscovery({
             health.version !== connectionContract.version ||
             health.ready !== true ||
             health.instance_id !== discovery.instance_id ||
-            health.generation !== discovery.generation
+            health.generation !== discovery.generation ||
+            health.helper_version !== discovery.helper_version
         ) {
             return null;
         }
@@ -84,7 +96,8 @@ export function validateDiscovery(discovery, contract = connectionContract) {
         discovery.schema !== contract.discovery.schema ||
         discovery.version !== contract.version ||
         discovery.ready !== true ||
-        !Number.isInteger(discovery.pid)
+        !Number.isInteger(discovery.pid) ||
+        !/^\d+\.\d+\.\d+$/.test(discovery.helper_version)
     ) {
         throw new Error('unsupported discovery contract');
     }
@@ -122,6 +135,27 @@ export function validateDiscovery(discovery, contract = connectionContract) {
     if (dirname(discovery.credential_path) !== expectedDirectory) {
         throw new Error('capability escaped the Prymer state directory');
     }
+}
+
+export function compareHelperVersions(first, second) {
+    if (!/^\d+\.\d+\.\d+$/.test(first) || !/^\d+\.\d+\.\d+$/.test(second)) {
+        throw new Error('invalid helper version');
+    }
+
+    const firstParts = first.split('.').map((part) => BigInt(part));
+    const secondParts = second.split('.').map((part) => BigInt(part));
+
+    for (let index = 0; index < firstParts.length; index += 1) {
+        if (firstParts[index] > secondParts[index]) {
+            return 1;
+        }
+
+        if (firstParts[index] < secondParts[index]) {
+            return -1;
+        }
+    }
+
+    return 0;
 }
 
 function exactKeys(value, expected) {

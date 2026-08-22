@@ -11,7 +11,7 @@ This tree is a self-contained marketplace. In Claude Code, from this directory:
 /plugin install prymer@prymer
 ```
 
-Then restart Claude Code (or run `/reload-plugins`). On first use, Claude opens Prymer in your browser to authorize — no token to copy. Then run `/prymer:onboard` to bind this project to a channel — the marketplace install has no channel baked in, so onboarding (or hand-adding a `<!-- prymer-channel: <workspace-slug>/<channel-key> -->` line to `CLAUDE.md`) is what tells future sessions which one to use.
+Then restart Claude Code (or run `/reload-plugins`). On first use, the signed Prymer helper opens Prymer in your browser to authorize — no token to copy. Then run `/prymer:onboard` to bind this project to a channel — the marketplace install has no channel baked in, so onboarding (or hand-adding a `<!-- prymer-channel: <workspace-slug>/<channel-key> -->` line to `CLAUDE.md`) is what tells future sessions which one to use.
 
 ## Generated — do not edit
 

@@ -5,7 +5,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "if command -v curl >/dev/null 2>&1 && ! curl -s -o /dev/null --max-time 3 'https://prymer.app/mcp/prymer' >/dev/null 2>&1; then printf '%s' 'Prymer is NOT reachable at https://prymer.app/mcp/prymer \u2014 the connection failed, so the Prymer MCP tools are unavailable this session. This is usually a local network problem, not a Prymer outage: corporate firewalls and DNS filters routinely block newly registered domains. Check whether that URL opens in a browser here, then try a different network (a phone hotspot is enough) to confirm. If it is filtered, ask your network administrator to allow the domain. Do not report a Prymer outage without first confirming it is unreachable from another network too.'; else printf '%s' 'Prymer is connected. Before starting work, call the get_context_for_injection MCP tool for the active Prymer channel (confirm it with the user; do not pick one from list_channels yourself) to load what other sessions already know.'; fi"
+                        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.mjs\" session-start claude; if command -v curl >/dev/null 2>&1 && ! curl -s -o /dev/null --max-time 3 'https://prymer.app/mcp/prymer' >/dev/null 2>&1; then printf '%s' 'Prymer is NOT reachable at https://prymer.app/mcp/prymer \u2014 the connection failed, so the Prymer MCP tools are unavailable this session. This is usually a local network problem, not a Prymer outage: corporate firewalls and DNS filters routinely block newly registered domains. Check whether that URL opens in a browser here, then try a different network (a phone hotspot is enough) to confirm. If it is filtered, ask your network administrator to allow the domain. Do not report a Prymer outage without first confirming it is unreachable from another network too.'; else printf '%s' 'Prymer is connected. Before starting work, call the get_context_for_injection MCP tool for the active Prymer channel (confirm it with the user; do not pick one from list_channels yourself) to load what other sessions already know.'; fi"
                     }
                 ]
             }
@@ -26,7 +26,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/set-host-session.mjs\""
+                        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.mjs\" pre-tool-use claude"
                     }
                 ]
             }
@@ -36,7 +36,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "printf '%s' 'If you finished a meaningful chunk of work, checkpoint it to the Prymer channel per its capture mode. Follow the guidance field returned by get_context_for_injection: Auto means call share_session with trigger=agent_auto; Propose means ask the user first; Off means keep it private.'"
+                        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.mjs\" stop claude; printf '%s' 'If you finished a meaningful chunk of work, checkpoint it to the Prymer channel per its capture mode. Follow the guidance field returned by get_context_for_injection: Auto means call share_session with trigger=agent_auto; Propose means ask the user first; Off means keep it private.'"
                     }
                 ]
             }

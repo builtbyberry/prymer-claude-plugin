@@ -1,8 +1,13 @@
 {
     "mcpServers": {
         "prymer": {
-            "type": "http",
-            "url": "https://prymer.app/mcp/prymer"
+            "type": "stdio",
+            "command": "node",
+            "args": [
+                "${CLAUDE_PLUGIN_ROOT}/runtime/edge-broker.mjs",
+                "--cloud-endpoint",
+                "https://prymer.app/mcp/prymer"
+            ]
         }
     }
 }

@@ -4,7 +4,8 @@ Connects this project to Prymer, the shared context bus, and teaches the ritual:
 
 ## What is inside
 
-- `.mcp.json` — connects the hosted Prymer MCP server at `https://prymer.app/mcp/prymer` (browser OAuth on first use; no token to copy).
+- `.mcp.json` — starts the local Prymer broker, which uses the edge when healthy and the signed helper's direct Cloud path otherwise.
+- `runtime/` — the credential-free routing broker plus signed macOS helper; the helper alone owns browser OAuth, Keychain state, and Cloud calls.
 - `skills/prymer/` — the Prymer skill: how to use the tools well.
 - `skills/` — the `/prymer:load`, `/prymer:checkpoint`, `/prymer:onboard`, `/prymer:curate`, `/prymer:handoff`, and `/prymer:project` skills.
 - `agents/prymer-dispatch` — a subagent that runs a Prymer dispatch end to end and returns a proposal for you to confirm.
@@ -19,7 +20,7 @@ From the directory that contains this `prymer/` folder:
 claude plugin install ./prymer
 ```
 
-Then restart Claude Code (or run `/reload-plugins`). On first use, Claude opens Prymer in your browser to authorize.
+Then restart Claude Code (or run `/reload-plugins`). On first use, the signed Prymer helper opens Prymer in your browser to authorize.
 
 ## After install
 

@@ -22,7 +22,7 @@
         ],
         "PreToolUse": [
             {
-                "matcher": "mcp__prymer__get_context_for_injection",
+                "matcher": "mcp__(plugin_prymer_)?prymer__get_context_for_injection",
                 "hooks": [
                     {
                         "type": "command",

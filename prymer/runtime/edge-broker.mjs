@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { Buffer } from 'node:buffer';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
@@ -14,6 +15,26 @@ import {
     fetchWithDeadline,
     healthyDiscovery,
 } from './edge-discovery.mjs';
+
+/**
+ * Runtime-binding constants.
+ *
+ * Deliberately NOT in client-edge-v1.json. That file must stay byte-identical to
+ * what the released signed helper emits from its own `contract` subcommand — CI
+ * byte-compares the two — so adding a key there breaks the cross-repository parity
+ * gate that Decision 1948(4) requires to remain unchanged. These constants are
+ * therefore local to the generated plugin source.
+ */
+const RUNTIME_BINDING = {
+    schema: 'prymer.flight-deck-runtime-binding/1',
+    control_schema: 'prymer.flight-deck-runtime-control/1',
+    updated_input_key: '__prymer_runtime_binding_v1',
+    control_path: '/lifecycle/flight-deck-runtime-binding',
+    credential_scheme: 'Prymer-Vendor',
+    credential_file: 'vendor-credential',
+    dispatch_header: 'X-Prymer-Runtime-Binding',
+    max_lifetime_seconds: 30,
+};
 
 const REQUEST_DEADLINE_MS = 30_000;
 const SIGNING_TEAM_ID = connectionContract.signing_team_id;
@@ -88,6 +109,12 @@ async function handleLine(line) {
 }
 
 async function route(request) {
+    // Strip the schema-hidden runtime binding BEFORE anything serializes the
+    // request. Cloud hashes the exact raw entity bytes it receives and verifies the
+    // provenance against that hash, so a binding left in the application body would
+    // both break the body hash and be rejected outright
+    // (`carrier_ambiguity.runtime_binding_in_application_json: reject`).
+    const runtimeBinding = takeRuntimeBinding(request);
     const prepared = await prepareHelperOnce();
     const local = prepared.allowLocalDiscovery
         ? await healthyDiscovery({
@@ -97,6 +124,10 @@ async function route(request) {
         : null;
 
     if (local === null) {
+        // The direct transport carries the binding inside its own stdin envelope,
+        // which the currently released helper does not implement. The binding is
+        // dropped rather than smuggled into the body: the interaction proceeds as an
+        // ordinary one and is simply not Flight Deck eligible.
         return callHelperDirect(request);
     }
 
@@ -112,6 +143,11 @@ async function route(request) {
                     authorization: `Bearer ${local.credential}`,
                     'content-type': 'application/json',
                     [connectionContract.client_session_header]: clientSession,
+                    ...(runtimeBinding === null
+                        ? {}
+                        : {
+                              [RUNTIME_BINDING.dispatch_header]: runtimeBinding,
+                          }),
                 },
                 body: JSON.stringify(request),
             },
@@ -223,6 +259,36 @@ async function directHelper() {
     } finally {
         directHelperStart = null;
     }
+}
+
+/**
+ * Remove the hook-injected runtime binding from the request and return it as an
+ * unpadded base64url envelope, or null when there is none.
+ *
+ * The key is reserved and absent from the tool schema, so a model cannot legitimately
+ * supply it. It is removed unconditionally — including on the direct route, where it
+ * cannot be carried — so it can never ride inside the hashed application body.
+ */
+function takeRuntimeBinding(request) {
+    const contract = RUNTIME_BINDING;
+    const args = request?.params?.arguments;
+
+    if (args === null || typeof args !== 'object') {
+        return null;
+    }
+
+    const envelope = args[contract.updated_input_key];
+    delete args[contract.updated_input_key];
+
+    if (envelope === null || typeof envelope !== 'object') {
+        return null;
+    }
+
+    return Buffer.from(JSON.stringify(envelope), 'utf8')
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
 }
 
 function rejectDirectHelper(error) {

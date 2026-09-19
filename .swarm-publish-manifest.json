@@ -8,6 +8,7 @@
     "prymer/README.md",
     "prymer/agents/prymer-dispatch.md",
     "prymer/agents/prymer-project.md",
+    "prymer/hooks/gate-approve-guard.mjs",
     "prymer/hooks/hooks.json",
     "prymer/hooks/lifecycle.mjs",
     "prymer/runtime/client-edge-v1.json",

@@ -7,7 +7,7 @@ Connects this project to Prymer, the shared context bus, and teaches the ritual:
 - `.mcp.json` — starts the local Prymer broker, which uses the edge when healthy and the signed helper's direct Cloud path otherwise.
 - `runtime/` — the credential-free routing broker plus signed macOS helper; the helper alone owns browser OAuth, Keychain state, and Cloud calls.
 - `skills/prymer/` — the Prymer skill: how to use the tools well.
-- `skills/` — the `/prymer:load`, `/prymer:checkpoint`, `/prymer:onboard`, `/prymer:curate`, `/prymer:handoff`, and `/prymer:project` skills.
+- `skills/` — the `/prymer:load`, `/prymer:checkpoint`, `/prymer:onboard`, `/prymer:curate`, `/prymer:handoff`, `/prymer:project`, `/prymer:project-brief`, and `/prymer:reviewer` skills.
 - `agents/prymer-dispatch` — a subagent that runs a Prymer dispatch end to end and returns a proposal for you to confirm.
 - `agents/prymer-project` — a subagent that runs a Prymer Project's produce-loop off the main thread and returns proposed review gates for a human to approve (the off-thread counterpart to the inline `/prymer:project` skill).
 - `hooks/` — reminders to load context at session start, preserve working context before compaction, and checkpoint when you finish.

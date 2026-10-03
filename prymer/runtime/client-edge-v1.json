@@ -1,6 +1,6 @@
 {
     "contract": "app.prymer.edge.connection",
-    "version": 2,
+    "version": 3,
     "platform": "darwin",
     "loopback_host": "127.0.0.1",
     "signing_team_id": "3A5B83E5D4",
@@ -12,7 +12,14 @@
         "max_body_bytes": 8192,
         "max_session_id_length": 512,
         "max_cwd_length": 4096,
-        "max_tool_length": 512
+        "max_tool_length": 512,
+        "max_transcript_path_length": 1024,
+        "content_consent": {
+            "file": "content-consent-v1.json",
+            "schema": "app.prymer.edge.content-consent",
+            "version": 1,
+            "clients": ["claude", "codex"]
+        }
     },
     "discovery": {
         "schema": "app.prymer.edge.discovery",

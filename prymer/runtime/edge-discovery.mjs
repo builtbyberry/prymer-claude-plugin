@@ -184,32 +184,74 @@ function isContractLoopbackEndpoint(endpoint, contract) {
     }
 }
 
+/**
+ * Whether Desktop's owner-only consent config opts this client in to carrying its
+ * session transcript path across the lifecycle boundary.
+ *
+ * Anything short of a private, valid file that names this client `true` is "no".
+ * A plugin-only install has no such file, so it never carries a path. The signed
+ * helper applies the same rule again on its side and refuses a path without it.
+ */
+export async function contentConsent(client) {
+    try {
+        const consentContract = connectionContract.lifecycle.content_consent;
+        const stateDirectory = dirname(discoveryPath);
+        const consentPath = join(stateDirectory, consentContract.file);
+
+        if (
+            !isOwnerPrivate(await lstat(stateDirectory), 'directory') ||
+            !isOwnerPrivate(await lstat(consentPath), 'file')
+        ) {
+            return false;
+        }
+
+        const consent = JSON.parse(await readFile(consentPath, 'utf8'));
+
+        return (
+            exactKeys(consent, ['clients', 'schema', 'version']) &&
+            consent.schema === consentContract.schema &&
+            consent.version === consentContract.version &&
+            exactKeys(consent.clients, [...consentContract.clients].sort()) &&
+            Object.values(consent.clients).every(
+                (optedIn) => typeof optedIn === 'boolean',
+            ) &&
+            consent.clients[client] === true
+        );
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A regular 0600 file, or a real 0700 directory, owned by the current user and
+ * never a symlink. `currentUid` is a parameter so the ownership rule can be
+ * exercised without a second account.
+ */
+export function isOwnerPrivate(stat, kind, currentUid = currentUserId()) {
+    const directory = kind === 'directory';
+
+    return (
+        !stat.isSymbolicLink() &&
+        (directory ? stat.isDirectory() : stat.isFile()) &&
+        (stat.mode & 0o777) === (directory ? 0o700 : 0o600) &&
+        (currentUid === null || stat.uid === currentUid)
+    );
+}
+
 function requirePrivateFile(file, label) {
-    if (
-        file.isSymbolicLink() ||
-        !file.isFile() ||
-        (file.mode & 0o777) !== 0o600 ||
-        !ownedByCurrentUser(file)
-    ) {
+    if (!isOwnerPrivate(file, 'file')) {
         throw new Error(`${label} file is not owner-private`);
     }
 }
 
 function requirePrivateDirectory(directory, label) {
-    if (
-        directory.isSymbolicLink() ||
-        !directory.isDirectory() ||
-        (directory.mode & 0o777) !== 0o700 ||
-        !ownedByCurrentUser(directory)
-    ) {
+    if (!isOwnerPrivate(directory, 'directory')) {
         throw new Error(`${label} directory is not owner-private`);
     }
 }
 
-function ownedByCurrentUser(stat) {
-    return (
-        typeof process.getuid !== 'function' || stat.uid === process.getuid()
-    );
+function currentUserId() {
+    return typeof process.getuid === 'function' ? process.getuid() : null;
 }
 
 export async function fetchWithDeadline(url, options, deadlineAt) {

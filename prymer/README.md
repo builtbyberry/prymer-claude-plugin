@@ -11,6 +11,7 @@ Connects this project to Prymer, the shared context bus, and teaches the ritual:
 - `agents/prymer-dispatch` — a subagent that runs a Prymer dispatch end to end and returns a proposal for you to confirm.
 - `agents/prymer-project` — a subagent that runs a Prymer Project's produce-loop off the main thread and returns proposed review gates for a human to approve (the off-thread counterpart to the inline `/prymer:project` skill).
 - `hooks/` — reminders to load context at session start, preserve working context before compaction, and checkpoint when you finish, plus an advisory guard that blocks an agent from approving its own review gate with the self-approval override on, locally (the Prymer server enforces this regardless).
+- The save, one more hook. When Prymer Desktop has switched it on for this client, it checks each command and file edit against the records your team keeps and can stop one that conflicts, showing you the reason. It does nothing without Prymer Desktop, and you switch it off there.
 
 ## Install
 
@@ -28,7 +29,7 @@ Run `/prymer:onboard` to bind this project to a channel — the plugin has no ch
 
 ## Power mode (optional)
 
-The hooks above are reminders — they ask the model to load context, which it usually does. For a deterministic load that runs even if the model forgets, install the `prymer` CLI, create a hook credential under Settings → Connected tools, and let a `SessionStart` hook run it:
+The session hooks above are reminders — they ask the model to load context, which it usually does. For a deterministic load that runs even if the model forgets, install the `prymer` CLI, create a hook credential under Settings → Connected tools, and let a `SessionStart` hook run it:
 
 ```bash
 npm install -g @builtbyberry/prymer-cli

@@ -11,6 +11,9 @@ export const connectionContract = JSON.parse(
     readFileSync(join(runtimeDirectory, 'client-edge-v1.json'), 'utf8'),
 );
 
+/** How far two clocks on one machine are allowed to disagree about an expiry. */
+const CLOCK_ALLOWANCE_SECONDS = 30;
+
 const discoveryPath = join(
     homedir(),
     'Library',
@@ -116,10 +119,11 @@ export function validateDiscovery(discovery, contract = connectionContract) {
 
     if (
         !Number.isInteger(discovery.published_at) ||
-        discovery.published_at > now + 30 ||
+        discovery.published_at > now + CLOCK_ALLOWANCE_SECONDS ||
         !Number.isInteger(discovery.expires_at) ||
         discovery.expires_at <= now ||
-        discovery.expires_at - now > contract.discovery.ttl_seconds + 30
+        discovery.expires_at - now >
+            contract.discovery.ttl_seconds + CLOCK_ALLOWANCE_SECONDS
     ) {
         throw new Error('discovery is stale');
     }
@@ -158,7 +162,7 @@ export function compareHelperVersions(first, second) {
     return 0;
 }
 
-function exactKeys(value, expected) {
+export function exactKeys(value, expected) {
     return (
         value !== null &&
         typeof value === 'object' &&
@@ -184,32 +188,119 @@ function isContractLoopbackEndpoint(endpoint, contract) {
     }
 }
 
-function requirePrivateFile(file, label) {
+/**
+ * Whether Desktop's owner-only consent config opts this client in to carrying its
+ * session transcript path across the lifecycle boundary.
+ *
+ * Anything short of a private, valid file that names this client `true` is "no".
+ * A plugin-only install has no such file, so it never carries a path. The signed
+ * helper applies the same rule again on its side and refuses a path without it.
+ */
+export async function contentConsent(client) {
+    try {
+        const consentContract = connectionContract.lifecycle.content_consent;
+        const consent = await ownerPrivateJson(consentContract.file);
+
+        return (
+            exactKeys(consent, ['clients', 'schema', 'version']) &&
+            consent.schema === consentContract.schema &&
+            consent.version === consentContract.version &&
+            optsIn(consent.clients, consentContract.clients, client)
+        );
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Whether Desktop's owner-only save config switches the save on for this client,
+ * right now. The file carries an expiry that Desktop keeps moving forward while
+ * it runs, so a Desktop that has quit, crashed or been removed leaves the save
+ * off without anything having to delete the file.
+ *
+ * Anything short of a private, valid, unexpired file that names this client
+ * `true` is "off". The signed helper applies the same rule again on its side.
+ */
+export async function saveEnabled(client, now = Math.floor(Date.now() / 1000)) {
+    try {
+        const saveContract = connectionContract.pre_tool_use;
+        const configContract = saveContract.save_config;
+        const save = await ownerPrivateJson(configContract.file);
+
+        return (
+            exactKeys(save, ['clients', 'expires_at', 'schema', 'version']) &&
+            save.schema === configContract.schema &&
+            save.version === configContract.version &&
+            optsIn(save.clients, saveContract.clients, client) &&
+            Number.isInteger(save.expires_at) &&
+            save.expires_at > now &&
+            save.expires_at - now <=
+                configContract.max_ttl_seconds + CLOCK_ALLOWANCE_SECONDS
+        );
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A config file Desktop writes beside the discovery document, decoded. Throws
+ * unless it is a private file in the private state directory.
+ */
+async function ownerPrivateJson(file) {
+    const stateDirectory = dirname(discoveryPath);
+    const path = join(stateDirectory, file);
+
     if (
-        file.isSymbolicLink() ||
-        !file.isFile() ||
-        (file.mode & 0o777) !== 0o600 ||
-        !ownedByCurrentUser(file)
+        !isOwnerPrivate(await lstat(stateDirectory), 'directory') ||
+        !isOwnerPrivate(await lstat(path), 'file')
     ) {
+        throw new Error('config is not owner-private');
+    }
+
+    return JSON.parse(await readFile(path, 'utf8'));
+}
+
+/** Every contract client present as a boolean, and this one `true`. */
+function optsIn(clients, contractClients, client) {
+    return (
+        exactKeys(clients, [...contractClients].sort()) &&
+        Object.values(clients).every(
+            (optedIn) => typeof optedIn === 'boolean',
+        ) &&
+        clients[client] === true
+    );
+}
+
+/**
+ * A regular 0600 file, or a real 0700 directory, owned by the current user and
+ * never a symlink. `currentUid` is a parameter so the ownership rule can be
+ * exercised without a second account.
+ */
+export function isOwnerPrivate(stat, kind, currentUid = currentUserId()) {
+    const directory = kind === 'directory';
+
+    return (
+        !stat.isSymbolicLink() &&
+        (directory ? stat.isDirectory() : stat.isFile()) &&
+        (stat.mode & 0o777) === (directory ? 0o700 : 0o600) &&
+        (currentUid === null || stat.uid === currentUid)
+    );
+}
+
+function requirePrivateFile(file, label) {
+    if (!isOwnerPrivate(file, 'file')) {
         throw new Error(`${label} file is not owner-private`);
     }
 }
 
 function requirePrivateDirectory(directory, label) {
-    if (
-        directory.isSymbolicLink() ||
-        !directory.isDirectory() ||
-        (directory.mode & 0o777) !== 0o700 ||
-        !ownedByCurrentUser(directory)
-    ) {
+    if (!isOwnerPrivate(directory, 'directory')) {
         throw new Error(`${label} directory is not owner-private`);
     }
 }
 
-function ownedByCurrentUser(stat) {
-    return (
-        typeof process.getuid !== 'function' || stat.uid === process.getuid()
-    );
+function currentUserId() {
+    return typeof process.getuid === 'function' ? process.getuid() : null;
 }
 
 export async function fetchWithDeadline(url, options, deadlineAt) {

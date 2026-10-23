@@ -11,6 +11,7 @@
     "prymer/hooks/gate-approve-guard.mjs",
     "prymer/hooks/hooks.json",
     "prymer/hooks/lifecycle.mjs",
+    "prymer/hooks/pre-tool-save.mjs",
     "prymer/runtime/client-edge-v1.json",
     "prymer/runtime/edge-broker.mjs",
     "prymer/runtime/edge-discovery.mjs",

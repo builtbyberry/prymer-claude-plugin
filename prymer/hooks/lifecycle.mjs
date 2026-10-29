@@ -1,14 +1,19 @@
 #!/usr/bin/env node
 
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import process from 'node:process';
 import {
+    SESSION_CREATED_MINIMUM_HELPER_VERSION,
+    compareHelperVersions,
     connectionContract,
+    contentConsent,
     fetchWithDeadline,
     healthyDiscovery,
+    sessionCreatedAt,
 } from '../runtime/edge-discovery.mjs';
 
 /**
@@ -61,7 +66,7 @@ process.stdin.on('end', async () => {
     }
 
     try {
-        await deliverLifecycle(payload, event, deadlineAt);
+        await deliverLifecycle(payload, event, client, deadlineAt);
     } catch {
         // Lifecycle delivery is best-effort and must never affect the host hook.
     }
@@ -79,7 +84,7 @@ process.stdin.on('end', async () => {
     }
 });
 
-async function deliverLifecycle(payload, eventName, totalDeadline) {
+async function deliverLifecycle(payload, eventName, clientName, totalDeadline) {
     const sessionId = payload?.session_id;
 
     if (
@@ -97,7 +102,7 @@ async function deliverLifecycle(payload, eventName, totalDeadline) {
         return;
     }
 
-    const body = {
+    const metadata = {
         event: eventName,
         session_id: sessionId,
         cwd: boundedString(
@@ -109,22 +114,158 @@ async function deliverLifecycle(payload, eventName, totalDeadline) {
             connectionContract.lifecycle.max_tool_length,
         ),
     };
-    const response = await fetchWithDeadline(
-        `${local.endpoint}${local.lifecycle_path}`,
-        {
-            method: 'POST',
-            headers: {
-                authorization: `Bearer ${local.credential}`,
-                'content-type': 'application/json',
+    const send = (body) =>
+        fetchWithDeadline(
+            `${local.endpoint}${local.lifecycle_path}`,
+            {
+                method: 'POST',
+                headers: {
+                    authorization: `Bearer ${local.credential}`,
+                    'content-type': 'application/json',
+                },
+                body,
             },
-            body: JSON.stringify(body),
-        },
-        totalDeadline,
-    );
+            totalDeadline,
+        );
 
-    if (!response.ok) {
-        return;
+    const transcript = await consentedTranscript(payload, clientName);
+
+    if (transcript !== null) {
+        const createdAt = acceptsSessionCreatedAt(local)
+            ? sessionCreatedAt(transcript.stat)
+            : null;
+        const content = JSON.stringify({
+            ...metadata,
+            client: clientName,
+            transcript_path: transcript.path,
+            ...(createdAt === null ? {} : { session_created_at: createdAt }),
+        });
+
+        // The helper applies the consent rule itself and refuses the whole request
+        // when it disagrees (consent withdrawn a moment ago, say). The metadata is
+        // then sent on its own, so a refused path never costs the observation.
+        if (
+            Buffer.byteLength(content, 'utf8') <=
+                connectionContract.lifecycle.max_body_bytes &&
+            (await send(content)).ok
+        ) {
+            return;
+        }
     }
+
+    await send(JSON.stringify(metadata));
+}
+
+/**
+ * Whether this helper accepts a session-created time. An older one would refuse
+ * the whole content request, so the time is left out for it.
+ */
+function acceptsSessionCreatedAt(local) {
+    try {
+        return (
+            compareHelperVersions(
+                local.helper_version,
+                SESSION_CREATED_MINIMUM_HELPER_VERSION,
+            ) >= 0
+        );
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * The session transcript to carry, as its resolved path and that file's stat, or
+ * null for the metadata-only request.
+ *
+ * Only a path, and the file's creation time taken from its stat, ever cross;
+ * never transcript content, and only when the owner-only consent config Desktop
+ * writes opts this client in. A plugin-only
+ * install has no such config. The path the client reports must name, and
+ * resolve to, a regular file inside that client's own session directory; the
+ * resolved path is what is sent.
+ */
+async function consentedTranscript(payload, clientName) {
+    try {
+        const lifecycle = connectionContract.lifecycle;
+        const reported = payload?.transcript_path;
+        const root = sessionDirectory(clientName);
+
+        if (root === null || typeof reported !== 'string') {
+            return null;
+        }
+
+        // Compare the text first, so a path that names somewhere else is dropped
+        // before the filesystem is asked about it, even if it would resolve here.
+        const realRoot = await realpath(root);
+
+        if (
+            !isInside(resolve(reported), root) &&
+            !isInside(resolve(reported), realRoot)
+        ) {
+            return null;
+        }
+
+        if (!(await contentConsent(clientName))) {
+            return null;
+        }
+
+        const realPath = await realpath(reported);
+
+        if (!isInside(realPath, realRoot) || !isSendable(realPath, lifecycle)) {
+            return null;
+        }
+
+        const stat = await lstat(realPath);
+
+        return stat.isFile() ? { path: realPath, stat } : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Where each client keeps its own session transcripts. Honors the same override
+ * each client honors for its config root.
+ */
+function sessionDirectory(clientName) {
+    if (clientName === 'claude') {
+        return join(
+            process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+            'projects',
+        );
+    }
+
+    if (clientName === 'codex') {
+        return join(
+            process.env.CODEX_HOME || join(homedir(), '.codex'),
+            'sessions',
+        );
+    }
+
+    return null;
+}
+
+/**
+ * Whether the helper would accept this resolved path: bounded in bytes, with no
+ * control character. A resolved path is already absolute and has no `..` segment.
+ */
+function isSendable(realPath, lifecycle) {
+    return (
+        Buffer.byteLength(realPath, 'utf8') <=
+            lifecycle.max_transcript_path_length &&
+        ![...realPath].some(isControlCharacter)
+    );
+}
+
+/** The Unicode control characters: U+0000 to U+001F and U+007F to U+009F. */
+function isControlCharacter(character) {
+    const code = character.codePointAt(0);
+
+    return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+}
+
+function isInside(path, directory) {
+    return path.startsWith(directory + sep);
 }
 
 function boundedString(value, maximum) {

@@ -40,6 +40,28 @@
                 ]
             }
         ],
+        "PostToolUseFailure": [
+            {
+                "matcher": "mcp__(plugin_prymer_)?prymer__.*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/grant-refusal-notice.mjs\""
+                    }
+                ]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "mcp__(plugin_prymer_)?prymer__list_channels",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/grant-refusal-notice.mjs\""
+                    }
+                ]
+            }
+        ],
         "Stop": [
             {
                 "hooks": [

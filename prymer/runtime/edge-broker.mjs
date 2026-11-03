@@ -64,7 +64,7 @@ const allowAdhocHelper = process.argv.includes('--allow-adhoc-helper');
 
 if (platform() !== connectionContract.platform) {
     process.stderr.write(
-        'Prymer edge routing contract v2 supports macOS only.\n',
+        'The Prymer edge routing contract supports macOS only.\n',
     );
     process.exit(78);
 }

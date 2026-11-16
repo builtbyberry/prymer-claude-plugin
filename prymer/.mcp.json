@@ -6,7 +6,9 @@
             "args": [
                 "${CLAUDE_PLUGIN_ROOT}/runtime/edge-broker.mjs",
                 "--cloud-endpoint",
-                "https://prymer.app/mcp/prymer"
+                "https://prymer.app/mcp/prymer",
+                "--host-session-env",
+                "CLAUDE_CODE_SESSION_ID"
             ]
         }
     }

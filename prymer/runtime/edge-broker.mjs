@@ -61,10 +61,11 @@ let helperPreparation = null;
 
 const cloudEndpoint = argument('--cloud-endpoint');
 const allowAdhocHelper = process.argv.includes('--allow-adhoc-helper');
+const hostSessionEnvironment = optionalArgument('--host-session-env');
 
 if (platform() !== connectionContract.platform) {
     process.stderr.write(
-        'Prymer edge routing contract v2 supports macOS only.\n',
+        'The Prymer edge routing contract supports macOS only.\n',
     );
     process.exit(78);
 }
@@ -115,6 +116,7 @@ async function route(request) {
     // both break the body hash and be rejected outright
     // (`carrier_ambiguity.runtime_binding_in_application_json: reject`).
     const runtimeBinding = takeRuntimeBinding(request);
+    stampHostSession(request);
     const prepared = await prepareHelperOnce();
     const local = prepared.allowLocalDiscovery
         ? await healthyDiscovery({
@@ -289,6 +291,57 @@ function takeRuntimeBinding(request) {
         .replace(/\+/g, '-')
         .replace(/\//g, '_')
         .replace(/=+$/, '');
+}
+
+/**
+ * Set host_session_id on a get_context_for_injection call from the host's own
+ * environment, when this broker was started with --host-session-env.
+ *
+ * Claude Code gives each stdio server it starts CLAUDE_CODE_SESSION_ID. In auto
+ * mode the PreToolUse hook leaves the call alone, because auto mode refuses to
+ * classify a rewritten one, so the broker fills the id here instead, after Claude
+ * Code has approved the call. It only fills a missing field: in every other mode
+ * the hook has already set the current id, which beats this one after /clear
+ * (the variable is fixed when the broker starts). A missing or malformed variable
+ * adds nothing.
+ *
+ * Without the flag (the Codex server) the arguments pass through untouched, so an
+ * inherited variable can never override what the Codex hook injected.
+ */
+function stampHostSession(request) {
+    if (
+        hostSessionEnvironment === null ||
+        !/^[A-Z_][A-Z0-9_]*$/.test(hostSessionEnvironment) ||
+        request?.method !== 'tools/call' ||
+        request?.params?.name !== 'get_context_for_injection'
+    ) {
+        return;
+    }
+
+    if (
+        request.params.arguments === null ||
+        typeof request.params.arguments !== 'object'
+    ) {
+        request.params.arguments = {};
+    }
+
+    const args = request.params.arguments;
+
+    if (
+        typeof args.host_session_id === 'string' &&
+        args.host_session_id !== ''
+    ) {
+        return;
+    }
+
+    const sessionId = process.env[hostSessionEnvironment];
+
+    if (
+        typeof sessionId === 'string' &&
+        /^[A-Za-z0-9._:-]{1,255}$/.test(sessionId)
+    ) {
+        args.host_session_id = sessionId;
+    }
 }
 
 function rejectDirectHelper(error) {

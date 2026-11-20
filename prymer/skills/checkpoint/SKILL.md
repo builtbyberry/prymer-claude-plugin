@@ -5,11 +5,11 @@ description: Checkpoint the current conversation back to its Prymer channel. Use
 
 # Checkpoint to Prymer
 
-Checkpoint the current conversation to its Prymer channel, following the `guidance` field returned by `get_context_for_injection`:
+Checkpoint the current conversation to its Prymer channel. To checkpoint, call checkpoint; if checkpoint is not in your tool list, call capture_context, then share_session with session_id set to the session.id capture_context returned. `checkpoint` captures this conversation and shares it in one call. Follow the `guidance` field returned by `get_context_for_injection` for the trigger, and pass it to `checkpoint` or `share_session`:
 
-- **Auto** — call `share_session` with `trigger=agent_auto`.
-- **Propose** — ask the user first; if they agree, call `share_session` with `trigger=user_request`.
-- **Off** — keep it private; do not share unless the user explicitly asks.
+- **Auto** — `trigger=agent_auto`.
+- **Propose** — ask the user first; if they agree, `trigger=user_request`.
+- **Off** — keep it private; do not checkpoint unless the user explicitly asks.
 
 ## Write it for a future reader
 

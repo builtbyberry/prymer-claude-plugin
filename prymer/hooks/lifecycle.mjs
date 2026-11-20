@@ -1,7 +1,21 @@
 #!/usr/bin/env node
 
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
+import {
+    closeSync,
+    constants as fsConstants,
+    fstatSync,
+    lstatSync,
+    mkdirSync,
+    openSync,
+    opendirSync,
+    readSync,
+    renameSync,
+    unlinkSync,
+    writeSync,
+} from 'node:fs';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
@@ -36,6 +50,47 @@ const RUNTIME_BINDING = {
     max_lifetime_seconds: 30,
 };
 
+/**
+ * The checkpoint reminder: a local tracker of work since the last checkpoint.
+ *
+ * PostToolUse records work (an edit tool, a pull request created through the
+ * shell), a channel load (its capture mode, the only place the hook learns it)
+ * and a successful checkpoint. Stop also compares the git working tree with the
+ * baseline taken at the load or the last acknowledgement. When work is pending
+ * in an Auto or Propose channel, Stop blocks once with a reason that tells the
+ * agent what to do; it never blocks while the host reports stop_hook_active, so
+ * it cannot loop. Tracking starts at the first load: a session that never loaded
+ * a channel is never asked.
+ *
+ * Everything stays on this machine: post-tool-use is not a lifecycle event of the
+ * connection contract, so nothing here is delivered to the helper, and no hook
+ * contacts Cloud. The state file holds a capture mode, a channel address, two
+ * counters and three hashes. docs/runbooks/publish-plugins.md has the contract.
+ *
+ * `step` is CaptureMode::CHECKPOINT_STEP, byte for byte; a test holds the two
+ * equal.
+ */
+const CHECKPOINT = {
+    step: 'call checkpoint; if checkpoint is not in your tool list, call capture_context, then share_session with session_id set to the session.id capture_context returned',
+    git_budget_ms: 700,
+    lock_wait_ms: 100,
+    lock_retry_ms: 10,
+    git_max_buffer: 16 * 1024 * 1024,
+    max_state_bytes: 4096,
+    max_response_chars: 4 * 1024 * 1024,
+    max_command_chars: 64 * 1024,
+    prune_age_ms: 7 * 24 * 60 * 60 * 1000,
+    prune_scan: 500,
+    prune_delete: 50,
+};
+
+const WORK_TOOLS = {
+    claude: ['Edit', 'Write', 'NotebookEdit', 'MultiEdit'],
+    codex: ['apply_patch', 'Edit', 'Write'],
+};
+
+const CAPTURE_MODES = ['auto', 'propose', 'off'];
+
 const event = process.argv[2];
 const client = process.argv[3];
 const deadlineAt = Date.now() + 700;
@@ -53,6 +108,23 @@ process.stdin.on('end', async () => {
 
         return;
     }
+
+    if (event === 'post-tool-use') {
+        try {
+            await recordToolUse(payload, client);
+        } catch {
+            // The tracker is a reminder, never a precondition.
+        }
+
+        return;
+    }
+
+    // The checkpoint decision reads the working tree while the helper is being
+    // told about the stop, so the two budgets overlap instead of adding up.
+    const checkpointOutput =
+        event === 'stop'
+            ? checkpointDecision(payload, client).catch(() => null)
+            : Promise.resolve(null);
 
     let output = null;
 
@@ -79,10 +151,952 @@ process.stdin.on('end', async () => {
         }
     }
 
+    output = output ?? (await checkpointOutput);
+
     if (output !== null) {
         process.stdout.write(JSON.stringify(output));
     }
 });
+
+/**
+ * PostToolUse: record work, a load, or a successful checkpoint. Tool names are
+ * classified exactly here, whatever the host's matcher let through.
+ */
+async function recordToolUse(payload, clientName) {
+    const tool = payload?.tool_name;
+
+    if (typeof tool !== 'string' || !(clientName in WORK_TOOLS)) {
+        return;
+    }
+
+    const prymer = prymerToolName(tool);
+
+    if (prymer === 'get_context_for_injection') {
+        await recordLoad(payload, clientName);
+
+        return;
+    }
+
+    if (prymer === 'checkpoint' || prymer === 'share_session') {
+        const result = toolResult(payload.tool_response);
+
+        if (result.ok && isSharedSession(result.value?.session)) {
+            await recordCheckpoint(payload, clientName);
+        }
+
+        return;
+    }
+
+    if (
+        WORK_TOOLS[clientName].includes(tool) ||
+        (tool === 'Bash' &&
+            isPullRequestCreation(
+                clientName,
+                payload.tool_input,
+                payload.tool_response,
+            ))
+    ) {
+        withState(clientName, payload, false, (state) => {
+            state.work += 1;
+        });
+    }
+}
+
+async function recordLoad(payload, clientName) {
+    const result = toolResult(payload.tool_response);
+    const channel = result.ok ? result.value?.channel : null;
+    const mode = channel?.capture_mode;
+
+    if (!CAPTURE_MODES.includes(mode)) {
+        return;
+    }
+
+    const address =
+        typeof channel.address === 'string' &&
+        channel.address.length <= 255 &&
+        /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/.test(channel.address)
+            ? channel.address
+            : null;
+    const now = await fingerprint(
+        payload.cwd,
+        Date.now() + CHECKPOINT.git_budget_ms,
+    );
+
+    const written = withState(clientName, payload, true, (state) => {
+        // A reload never swallows git work made since the baseline (a commit
+        // or an edit through the shell): it is latched into work first.
+        if (state.base !== null && changed(state.base, now)) {
+            state.work += 1;
+        }
+
+        state.base = state.base === null ? now : merged(now, state.base);
+        state.load = { mode, address };
+    });
+
+    if (written !== null) {
+        pruneStates(written.directory, written.key);
+    }
+}
+
+async function recordCheckpoint(payload, clientName) {
+    if (peekState(clientName, payload) === null) {
+        return;
+    }
+
+    const now = await fingerprint(
+        payload.cwd,
+        Date.now() + CHECKPOINT.git_budget_ms,
+    );
+
+    withState(clientName, payload, false, (state) => {
+        state.acked = state.work;
+        state.base = now;
+    });
+}
+
+/**
+ * Stop: the block decision, or null. Pending work is acknowledged before the
+ * block is printed, and nothing is printed if that write fails, so the hook can
+ * neither loop nor ask about the same work twice.
+ */
+async function checkpointDecision(payload, clientName) {
+    if (!(clientName in WORK_TOOLS)) {
+        return null;
+    }
+
+    const peek = peekState(clientName, payload);
+
+    if (peek === null) {
+        return null;
+    }
+
+    const active = payload.stop_hook_active === true;
+    const needsGit = !active && peek.load !== null && peek.load.mode !== 'off';
+    const now = needsGit
+        ? await fingerprint(payload.cwd, Date.now() + CHECKPOINT.git_budget_ms)
+        : null;
+
+    const written = withState(clientName, payload, false, (state) => {
+        if (active || state.load === null || state.load.mode === 'off') {
+            return null;
+        }
+
+        const current = now ?? emptyFingerprint();
+
+        if (state.work <= state.acked && !changed(state.base, current)) {
+            state.base = adopted(state.base, current);
+
+            return null;
+        }
+
+        state.acked = state.work;
+        state.base = current;
+
+        return state.load;
+    });
+
+    if (written === null || written.value === null) {
+        return null;
+    }
+
+    return {
+        decision: 'block',
+        reason: checkpointReason(written.value),
+    };
+}
+
+function checkpointReason(load) {
+    const channel =
+        load.address === null
+            ? 'the Prymer channel you loaded'
+            : `the Prymer channel ${load.address}`;
+
+    if (load.mode === 'propose') {
+        return (
+            `Prymer: work happened since your last checkpoint to ${channel} (capture mode Propose). ` +
+            'If it finished a meaningful chunk of work, ask the user whether to checkpoint it to the channel, then end your turn. ' +
+            `Only if they agree, checkpoint with trigger=user_request on whichever tool you use: ${CHECKPOINT.step}. ` +
+            'Do not checkpoint without asking.'
+        );
+    }
+
+    return (
+        `Prymer: work happened since your last checkpoint to ${channel} (capture mode Auto). ` +
+        'If it finished a meaningful chunk of work (a fix, a feature, a decision, a commit or a pull request), ' +
+        `checkpoint it now with trigger=agent_auto on whichever tool you use: ${CHECKPOINT.step}. ` +
+        'If you are still in the middle of the task, end your turn without checkpointing.'
+    );
+}
+
+/** The Prymer tool a host tool name names, under either exposure, or null. */
+function prymerToolName(tool) {
+    const match = /^mcp__(?:plugin_prymer_)?prymer__([a-z_]+)$/.exec(tool);
+
+    return match === null ? null : match[1];
+}
+
+function isSharedSession(session) {
+    if (session === null || typeof session !== 'object') {
+        return false;
+    }
+
+    return (
+        (Number.isInteger(session.id) && session.id > 0) ||
+        (typeof session.id === 'string' && session.id !== '')
+    );
+}
+
+/**
+ * A tool result as {ok, value}. It unwraps a JSON string, a content array (its
+ * first text block), and an MCP envelope (structuredContent, else content), and
+ * is not ok when any level says isError or nothing parses to an object.
+ */
+function toolResult(response, depth = 0) {
+    const failed = { ok: false, value: null };
+
+    if (depth > 4) {
+        return failed;
+    }
+
+    if (typeof response === 'string') {
+        if (response.length > CHECKPOINT.max_response_chars) {
+            return failed;
+        }
+
+        try {
+            return toolResult(JSON.parse(response), depth + 1);
+        } catch {
+            return failed;
+        }
+    }
+
+    if (Array.isArray(response)) {
+        const text = response.find(
+            (block) =>
+                block !== null &&
+                typeof block === 'object' &&
+                typeof block.text === 'string',
+        );
+
+        return text === undefined ? failed : toolResult(text.text, depth + 1);
+    }
+
+    if (response === null || typeof response !== 'object') {
+        return failed;
+    }
+
+    if (response.isError === true) {
+        return failed;
+    }
+
+    if (
+        response.structuredContent !== null &&
+        typeof response.structuredContent === 'object'
+    ) {
+        return toolResult(response.structuredContent, depth + 1);
+    }
+
+    if (Array.isArray(response.content)) {
+        return toolResult(response.content, depth + 1);
+    }
+
+    return { ok: true, value: response };
+}
+
+/**
+ * Whether a shell call created a pull request: `gh pr create` is the command
+ * run (not text inside another command), it is not a dry run, the call
+ * succeeded, and its last line of output is the pull request URL gh prints.
+ */
+function isPullRequestCreation(clientName, input, response) {
+    const command =
+        typeof input?.command === 'string'
+            ? input.command
+            : Array.isArray(input?.command) &&
+                input.command.every((part) => typeof part === 'string')
+              ? input.command.join(' ')
+              : null;
+
+    if (
+        command === null ||
+        command.length > CHECKPOINT.max_command_chars ||
+        !/^(cd\s+\S+\s*&&\s*)?gh\s+pr\s+create\b/.test(command.trim()) ||
+        /(^|\s)--dry-run\b/.test(command)
+    ) {
+        return false;
+    }
+
+    const output = successfulOutput(clientName, response);
+
+    if (output === null) {
+        return false;
+    }
+
+    const lines = output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '');
+
+    return (
+        lines.length > 0 &&
+        /^https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+$/.test(
+            lines[lines.length - 1],
+        )
+    );
+}
+
+/**
+ * A shell call's output when the result shows it succeeded, else null. Claude
+ * Code sends PostToolUse only for a Bash call that succeeded; Codex sends it
+ * for failures too, so it needs a zero exit code.
+ */
+function successfulOutput(clientName, response) {
+    if (typeof response === 'string') {
+        if (
+            clientName !== 'codex' ||
+            response.length > CHECKPOINT.max_response_chars
+        ) {
+            return null;
+        }
+
+        const lines = response.split('\n');
+        const succeeded = lines.some(
+            (line) =>
+                line.trim() === 'Exit code: 0' ||
+                /^Process exited with code 0(\D|$)/.test(line.trim()),
+        );
+
+        if (!succeeded) {
+            return null;
+        }
+
+        const marker = lines.findIndex((line) => line.trim() === 'Output:');
+
+        return marker === -1 ? response : lines.slice(marker + 1).join('\n');
+    }
+
+    if (response === null || typeof response !== 'object') {
+        return null;
+    }
+
+    if (clientName === 'claude') {
+        return response.interrupted !== true &&
+            typeof response.stdout === 'string'
+            ? response.stdout
+            : null;
+    }
+
+    const code = response.exit_code ?? response.exitCode;
+
+    if (code !== 0) {
+        return null;
+    }
+
+    for (const key of ['stdout', 'output', 'aggregated_output']) {
+        if (typeof response[key] === 'string') {
+            return response[key];
+        }
+    }
+
+    return null;
+}
+
+/**
+ * The working tree of cwd as three independent hashes: HEAD (or "unborn"), the
+ * status listing, and the diff against HEAD. A part that cannot be read in the
+ * budget is null, and a null part never counts as a change.
+ */
+async function fingerprint(cwd, deadline) {
+    const empty = emptyFingerprint();
+
+    if (typeof cwd !== 'string' || !cwd.startsWith('/')) {
+        return empty;
+    }
+
+    const inside = await runGit(
+        cwd,
+        ['rev-parse', '--is-inside-work-tree'],
+        deadline,
+    );
+
+    if (
+        inside === null ||
+        inside.status !== 0 ||
+        inside.stdout.toString().trim() !== 'true'
+    ) {
+        return empty;
+    }
+
+    const head = await runGit(
+        cwd,
+        ['rev-parse', '--verify', '-q', 'HEAD'],
+        deadline,
+    );
+    const headValue =
+        head === null
+            ? null
+            : head.status === 0
+              ? head.stdout.toString().trim()
+              : head.status === 1
+                ? 'unborn'
+                : null;
+
+    const status = await runGit(
+        cwd,
+        [
+            '--no-optional-locks',
+            'status',
+            '--porcelain=v1',
+            '-z',
+            '--untracked-files=all',
+            '--ignore-submodules=dirty',
+        ],
+        deadline,
+    );
+    const diff =
+        headValue === null || headValue === 'unborn'
+            ? null
+            : await runGit(
+                  cwd,
+                  [
+                      '--no-optional-locks',
+                      'diff',
+                      '--no-ext-diff',
+                      '--no-textconv',
+                      '--no-color',
+                      '--binary',
+                      'HEAD',
+                  ],
+                  deadline,
+              );
+
+    return {
+        head: headValue,
+        status:
+            status !== null && status.status === 0
+                ? digest(status.stdout)
+                : null,
+        diff: diff !== null && diff.status === 0 ? digest(diff.stdout) : null,
+    };
+}
+
+/**
+ * One git command, as {status, stdout}, or null when it cannot run, is killed at
+ * the deadline, or prints more than the buffer allows. The process is killed
+ * outright (SIGKILL), and the result does not wait for anything it left behind.
+ */
+function runGit(cwd, args, deadline) {
+    const remaining = deadline - Date.now();
+
+    if (remaining <= 0) {
+        return Promise.resolve(null);
+    }
+
+    return new Promise((done) => {
+        let child;
+
+        try {
+            child = spawn(
+                'git',
+                [
+                    '-c',
+                    'core.fsmonitor=false',
+                    '-c',
+                    'core.hooksPath=/dev/null',
+                    ...args,
+                ],
+                {
+                    cwd,
+                    stdio: ['ignore', 'pipe', 'ignore'],
+                    env: {
+                        ...process.env,
+                        GIT_OPTIONAL_LOCKS: '0',
+                        GIT_TERMINAL_PROMPT: '0',
+                    },
+                },
+            );
+        } catch {
+            done(null);
+
+            return;
+        }
+
+        const chunks = [];
+        let size = 0;
+        let settled = false;
+        const finish = (result) => {
+            if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                done(result);
+            }
+        };
+        const kill = () => {
+            try {
+                child.kill('SIGKILL');
+                child.stdout.destroy();
+                child.unref();
+            } catch {
+                // Already gone.
+            }
+
+            finish(null);
+        };
+        const timer = setTimeout(kill, remaining);
+
+        child.on('error', () => finish(null));
+        child.stdout.on('data', (chunk) => {
+            size += chunk.length;
+
+            if (size > CHECKPOINT.git_max_buffer) {
+                kill();
+
+                return;
+            }
+
+            chunks.push(chunk);
+        });
+        child.on('close', (code) =>
+            finish(
+                typeof code === 'number'
+                    ? { status: code, stdout: Buffer.concat(chunks) }
+                    : null,
+            ),
+        );
+    });
+}
+
+function digest(bytes) {
+    return createHash('sha256').update(bytes).digest('hex');
+}
+
+function emptyFingerprint() {
+    return { head: null, status: null, diff: null };
+}
+
+/** Whether a part known on both sides differs. */
+function changed(base, now) {
+    if (base === null) {
+        return false;
+    }
+
+    return ['head', 'status', 'diff'].some(
+        (part) =>
+            base[part] !== null &&
+            now[part] !== null &&
+            base[part] !== now[part],
+    );
+}
+
+/** The baseline with any part it lacked taken from now, never counted as work. */
+function adopted(base, now) {
+    if (base === null) {
+        return now;
+    }
+
+    return {
+        head: base.head ?? now.head,
+        status: base.status ?? now.status,
+        diff: base.diff ?? now.diff,
+    };
+}
+
+/** now, with any part it could not read kept from the earlier baseline. */
+function merged(now, base) {
+    return {
+        head: now.head ?? base.head,
+        status: now.status ?? base.status,
+        diff: now.diff ?? base.diff,
+    };
+}
+
+function freshState() {
+    return {
+        v: 1,
+        work: 0,
+        acked: 0,
+        load: null,
+        base: null,
+    };
+}
+
+/**
+ * The owner-only directory this client's checkpoint state lives in, or null.
+ * The client's own config root is trusted as given; the two directories under it
+ * must be real directories owned by this user with no group or other access.
+ */
+function stateDirectory(clientName) {
+    const root =
+        clientName === 'claude'
+            ? process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+            : process.env.CODEX_HOME || join(homedir(), '.codex');
+    let directory = root;
+
+    for (const part of ['prymer', 'checkpoint']) {
+        directory = join(directory, part);
+
+        try {
+            mkdirSync(directory, { mode: 0o700 });
+        } catch (error) {
+            if (error?.code !== 'EEXIST') {
+                return null;
+            }
+        }
+
+        const stat = lstatSync(directory);
+
+        if (
+            !stat.isDirectory() ||
+            stat.uid !== process.getuid() ||
+            (stat.mode & 0o077) !== 0
+        ) {
+            return null;
+        }
+    }
+
+    return directory;
+}
+
+function sessionKey(clientName, payload) {
+    const sessionId = payload?.session_id;
+
+    if (
+        typeof sessionId !== 'string' ||
+        sessionId === '' ||
+        sessionId.length > connectionContract.lifecycle.max_session_id_length
+    ) {
+        return null;
+    }
+
+    return digest(`${clientName}\0${sessionId}`);
+}
+
+/** The session's state without the lock, for deciding what to compute, or null. */
+function peekState(clientName, payload) {
+    const key = sessionKey(clientName, payload);
+    const directory = key === null ? null : stateDirectory(clientName);
+
+    if (directory === null) {
+        return null;
+    }
+
+    const state = readState(join(directory, `${key}.json`));
+
+    return state === null || state === 'missing' ? null : state;
+}
+
+/**
+ * Run one transition under the session's lock: read the state, let `change`
+ * mutate it, and replace the file (which also refreshes the mtime pruning
+ * reads). Returns {value, directory, key}
+ * once the new state is written, else null. `create` allows a first state
+ * (only a load creates one). A lock someone else holds is waited on briefly and
+ * never taken over: past the wait, nothing happens.
+ */
+function withState(clientName, payload, create, change) {
+    const key = sessionKey(clientName, payload);
+    const directory = key === null ? null : stateDirectory(clientName);
+
+    if (directory === null) {
+        return null;
+    }
+
+    const path = join(directory, `${key}.json`);
+
+    // Only a load starts tracking, so with no state there is nothing to change
+    // and no lock to take.
+    if (!create && !exists(path)) {
+        return null;
+    }
+
+    const lock = join(directory, `${key}.lock`);
+
+    if (!acquireLock(lock, Date.now() + CHECKPOINT.lock_wait_ms)) {
+        return null;
+    }
+
+    try {
+        const read = readState(path);
+
+        if (read === null || (read === 'missing' && !create)) {
+            return null;
+        }
+
+        const state = read === 'missing' ? freshState() : read;
+        const value = change(state) ?? null;
+
+        return writeState(directory, key, state)
+            ? { value, directory, key }
+            : null;
+    } finally {
+        try {
+            unlinkSync(lock);
+        } catch {
+            // Only this invocation ever removes the lock it created.
+        }
+    }
+}
+
+function exists(path) {
+    try {
+        lstatSync(path);
+
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function acquireLock(lock, waitUntil) {
+    for (;;) {
+        try {
+            closeSync(
+                openSync(
+                    lock,
+                    fsConstants.O_WRONLY |
+                        fsConstants.O_CREAT |
+                        fsConstants.O_EXCL |
+                        fsConstants.O_NOFOLLOW,
+                    0o600,
+                ),
+            );
+
+            return true;
+        } catch (error) {
+            if (error?.code !== 'EEXIST' || Date.now() >= waitUntil) {
+                return false;
+            }
+
+            Atomics.wait(
+                new Int32Array(new SharedArrayBuffer(4)),
+                0,
+                0,
+                CHECKPOINT.lock_retry_ms,
+            );
+        }
+    }
+}
+
+/**
+ * The state at path: the parsed state, 'missing' when there is none, or null
+ * when the file is not a regular file this user owns (a symlink included). A
+ * file that is too large or not a valid state reads as a fresh one.
+ */
+function readState(path) {
+    let fd;
+
+    try {
+        fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    } catch (error) {
+        return error?.code === 'ENOENT' ? 'missing' : null;
+    }
+
+    try {
+        const stat = fstatSync(fd);
+
+        if (!stat.isFile() || stat.uid !== process.getuid()) {
+            return null;
+        }
+
+        if (stat.size > CHECKPOINT.max_state_bytes) {
+            return freshState();
+        }
+
+        const buffer = Buffer.alloc(CHECKPOINT.max_state_bytes + 1);
+        const length = readSync(fd, buffer, 0, buffer.length, 0);
+
+        return validState(buffer.subarray(0, length).toString('utf8'));
+    } catch {
+        return null;
+    } finally {
+        closeSync(fd);
+    }
+}
+
+function validState(text) {
+    let state;
+
+    try {
+        state = JSON.parse(text);
+    } catch {
+        return freshState();
+    }
+
+    const count = (value) => Number.isSafeInteger(value) && value >= 0;
+    const part = (value) => value === null || typeof value === 'string';
+    const valid =
+        state !== null &&
+        typeof state === 'object' &&
+        state.v === 1 &&
+        count(state.work) &&
+        count(state.acked) &&
+        state.acked <= state.work &&
+        (state.load === null ||
+            (typeof state.load === 'object' &&
+                CAPTURE_MODES.includes(state.load.mode) &&
+                part(state.load.address))) &&
+        (state.base === null ||
+            (typeof state.base === 'object' &&
+                part(state.base.head) &&
+                part(state.base.status) &&
+                part(state.base.diff)));
+
+    return valid
+        ? {
+              v: 1,
+              work: state.work,
+              acked: state.acked,
+              load:
+                  state.load === null
+                      ? null
+                      : { mode: state.load.mode, address: state.load.address },
+              base:
+                  state.base === null
+                      ? null
+                      : {
+                            head: state.base.head,
+                            status: state.base.status,
+                            diff: state.base.diff,
+                        },
+          }
+        : freshState();
+}
+
+function writeState(directory, key, state) {
+    const temporary = join(
+        directory,
+        `${key}.${randomBytes(8).toString('hex')}.tmp`,
+    );
+
+    try {
+        const fd = openSync(
+            temporary,
+            fsConstants.O_WRONLY |
+                fsConstants.O_CREAT |
+                fsConstants.O_EXCL |
+                fsConstants.O_NOFOLLOW,
+            0o600,
+        );
+
+        try {
+            writeSync(fd, JSON.stringify(state));
+        } finally {
+            closeSync(fd);
+        }
+
+        renameSync(temporary, join(directory, `${key}.json`));
+
+        return true;
+    } catch {
+        try {
+            unlinkSync(temporary);
+        } catch {
+            // Nothing was left behind, or it cannot be removed.
+        }
+
+        return false;
+    }
+}
+
+/**
+ * Remove other sessions' state untouched for a week. Each is removed only under
+ * a lock this invocation created, after checking its age again; a session that
+ * holds its lock is skipped, and no lock this invocation did not create is ever
+ * removed.
+ */
+function pruneStates(directory, ownKey) {
+    let handle;
+
+    try {
+        handle = opendirSync(directory);
+    } catch {
+        return;
+    }
+
+    const cutoff = () => Date.now() - CHECKPOINT.prune_age_ms;
+    let scanned = 0;
+    let deleted = 0;
+
+    try {
+        for (
+            let entry = handle.readSync();
+            entry !== null &&
+            scanned < CHECKPOINT.prune_scan &&
+            deleted < CHECKPOINT.prune_delete;
+            entry = handle.readSync()
+        ) {
+            scanned += 1;
+            const match = /^([0-9a-f]{64})\.(json|[0-9a-f]{16}\.tmp)$/.exec(
+                entry.name,
+            );
+
+            if (match === null || match[1] === ownKey) {
+                continue;
+            }
+
+            const path = join(directory, entry.name);
+
+            if (match[2] !== 'json') {
+                // A temporary file left by a write that never finished.
+                if (isStale(path, cutoff())) {
+                    unlinkQuietly(path);
+                    deleted += 1;
+                }
+
+                continue;
+            }
+
+            if (!isStale(path, cutoff())) {
+                continue;
+            }
+
+            const lock = join(directory, `${match[1]}.lock`);
+
+            if (!acquireLock(lock, 0)) {
+                continue;
+            }
+
+            try {
+                if (isStale(path, cutoff())) {
+                    unlinkQuietly(path);
+                    deleted += 1;
+                }
+            } finally {
+                unlinkQuietly(lock);
+            }
+        }
+    } catch {
+        // Pruning is housekeeping; it never affects the hook.
+    } finally {
+        try {
+            handle.closeSync();
+        } catch {
+            // Already closed.
+        }
+    }
+}
+
+function isStale(path, cutoff) {
+    try {
+        const stat = lstatSync(path);
+
+        return (
+            stat.isFile() &&
+            stat.uid === process.getuid() &&
+            stat.mtimeMs < cutoff
+        );
+    } catch {
+        return false;
+    }
+}
+
+function unlinkQuietly(path) {
+    try {
+        unlinkSync(path);
+    } catch {
+        // Already gone.
+    }
+}
 
 async function deliverLifecycle(payload, eventName, clientName, totalDeadline) {
     const sessionId = payload?.session_id;

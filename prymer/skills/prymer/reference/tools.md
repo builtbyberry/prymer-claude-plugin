@@ -21,7 +21,8 @@ The tools available once a client is connected to Prymer, grouped by the loop.
 
 ## Checkpoint (end of a meaningful chunk)
 
-- `share_session` — checkpoint a private conversation to its channel, exposing its summary and provenance to teammates (never raw content, no record created). Pass `trigger=agent_auto` only when the mode is Auto; otherwise `trigger=user_request` after the user agrees.
+- `checkpoint` — capture this conversation and share it to its channel in one call, exposing its summary and provenance to teammates (never raw content, no record created). Pass `trigger=agent_auto` only when the mode is Auto; otherwise `trigger=user_request` after the user agrees.
+- `share_session` — the fallback when `checkpoint` is not in your tool list: share the private conversation `capture_context` captured, passing the id it returned as `session_id`, with the same `trigger` rule.
 
 ## Curate durable canon (explicit user intent)
 
